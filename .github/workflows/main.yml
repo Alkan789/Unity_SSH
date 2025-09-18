@@ -1,4 +1,9 @@
-name: Tailscale SSH Access
+# GitHub Actions workflow: Tailscale + OpenSSH (key-based)
+# Kullanım:
+# - GitHub Secrets içine: TAILSCALE_AUTH_KEY (tailscale auth key), SSH_PUBLIC_KEY (kendi public ssh anahtarınız) ekleyin.
+# - workflow_dispatch ile elle başlatın. Loglarda TAILSCALE_IP gözükecek; local makinenizden private key ile bağlanın.
+
+name: Tailscale SSH Access (key-based)
 
 on:
   workflow_dispatch:
@@ -8,35 +13,92 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
+    env:
+      SSH_USER: sshuser
+
     steps:
       - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }}
+          sudo tailscale up --authkey "${{ secrets.TAILSCALE_AUTH_KEY }}"
           echo "✅ Tailscale bağlantısı kuruldu"
-          sleep 10
+          sleep 3
 
-      - name: Create SSH User
+      - name: Install and start OpenSSH
         run: |
-          sudo useradd -m sshuser
-          echo "sshuser:Coderz4571!" | sudo chpasswd
-          sudo usermod -aG sudo sshuser
-          echo "SSH_PASSWORD=Coderz4571!" >> $GITHUB_ENV
-          echo "✅ SSH kullanıcı oluşturuldu"
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server
+          sudo mkdir -p /var/run/sshd
+          # Key-based auth tercih ediliyor, parola ile giriş kapatılacak
+          sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config || true
+          sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config || true
+          # restart/start sshd (systemctl varsa kullan, yoksa service)
+          if command -v systemctl >/dev/null 2>&1; then
+            sudo systemctl enable --now ssh
+          else
+            sudo service ssh start
+          fi
+          echo "✅ OpenSSH kuruldu ve başlatıldı"
+
+      - name: Create SSH user and install authorized_keys
+        run: |
+          sudo useradd -m -s /bin/bash "$SSH_USER" || true
+          # authorized_keys'i secret'tan ekle
+          sudo mkdir -p /home/$SSH_USER/.ssh
+          sudo bash -c 'printf "%s\n" "${{ secrets.SSH_PUBLIC_KEY }}" >> /home/$SSH_USER/.ssh/authorized_keys'
+          sudo chown -R $SSH_USER:$SSH_USER /home/$SSH_USER/.ssh
+          sudo chmod 700 /home/$SSH_USER/.ssh
+          sudo chmod 600 /home/$SSH_USER/.ssh/authorized_keys
+          # sudo yetkisi ver (opsiyonel)
+          sudo usermod -aG sudo $SSH_USER || true
+          echo "SSH_USER=$SSH_USER" >> $GITHUB_ENV
+          echo "✅ SSH kullanıcısı oluşturuldu ve public key eklendi"
 
       - name: Show Tailscale IP
         run: |
-          IP=$(tailscale ip -4)
+          IP=$(tailscale ip -4 | head -n1)
           echo "Tailscale IP: $IP"
           echo "TAILSCALE_IP=$IP" >> $GITHUB_ENV
 
-      - name: Keep Alive
+      - name: Debug / Connectivity checks (logs will appear in Actions output)
         run: |
-          echo ""
-          echo "=== TAILSCALE SSH ACTIVE ==="
-          echo "IP: $TAILSCALE_IP"
-          echo "Username: sshuser"
-          echo "Password: $SSH_PASSWORD"
+          echo "--- Tailscale status"
+          tailscale status || true
+          echo "--- Tailscale IP"
+          tailscale ip -4 || true
+
+          echo "--- sshd status"
+          if command -v systemctl >/dev/null 2>&1; then
+            sudo systemctl status ssh --no-pager || true
+          else
+            sudo service ssh status || true
+          fi
+
+          echo "--- Listening ports (ssh)"
+          ss -tlnp | grep :22 || sudo netstat -tlnp | grep :22 || true
+
+          echo "--- recent auth log (if available)"
+          sudo tail -n 200 /var/log/auth.log || sudo journalctl -u ssh --no-pager -n 200 || true
+
+          echo "--- ping tailscale self (sanity)"
+          IP=$(tailscale ip -4 | head -n1)
+          if [ -n "$IP" ]; then
+            echo "Pinging $IP from runner (tailscale ping)"
+            tailscale ping -c 4 $IP || true
+          fi
+
+      - name: Show connection instructions
+        run: |
+          echo "=== Bağlanma talimatı ==="
+          echo "1) Local makinenizde private key'iniz hazır olsun (ör. ~/.ssh/id_rsa)."
+          echo "2) Connect command örneği (local terminalinizde çalıştırın):"
+          echo "   ssh -i /path/to/private_key $SSH_USER@${{ env.TAILSCALE_IP }}"
+          echo "3) Eğer ""Permission denied"" alırsanız public key'inizi (secrets) doğru koyduğunuzdan emin olun."
+
+      - name: Keep Alive (keep job running so you can SSH)
+        run: |
+          echo "SSH erişimi hazır. IP: ${{ env.TAILSCALE_IP }}"
+          echo "Runner'ı kapatmak için workflow'u durdurun veya timeout süresi dolana kadar açık kalacak."
           while true; do
             echo "[ $(date) ] SSH ortamı çalışıyor..."
             sleep 300
