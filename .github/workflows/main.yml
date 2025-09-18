@@ -1,0 +1,43 @@
+name: Tailscale SSH Access
+
+on:
+  workflow_dispatch:
+
+jobs:
+  tailscale-ssh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }}
+          echo "✅ Tailscale bağlantısı kuruldu"
+          sleep 10
+
+      - name: Create SSH User
+        run: |
+          sudo useradd -m sshuser
+          echo "sshuser:Coderz4571!" | sudo chpasswd
+          sudo usermod -aG sudo sshuser
+          echo "SSH_PASSWORD=Coderz4571!" >> $GITHUB_ENV
+          echo "✅ SSH kullanıcı oluşturuldu"
+
+      - name: Show Tailscale IP
+        run: |
+          IP=$(tailscale ip -4)
+          echo "Tailscale IP: $IP"
+          echo "TAILSCALE_IP=$IP" >> $GITHUB_ENV
+
+      - name: Keep Alive
+        run: |
+          echo ""
+          echo "=== TAILSCALE SSH ACTIVE ==="
+          echo "IP: $TAILSCALE_IP"
+          echo "Username: sshuser"
+          echo "Password: $SSH_PASSWORD"
+          while true; do
+            echo "[ $(date) ] SSH ortamı çalışıyor..."
+            sleep 300
+          done
