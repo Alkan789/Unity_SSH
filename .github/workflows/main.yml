@@ -1,4 +1,4 @@
-name: Tailscale SSH Access (key-based, with sudo password)
+name: Tailscale SSH Access (key-based, with sudo password - fixed)
 
 on:
   workflow_dispatch:
@@ -19,10 +19,10 @@ jobs:
           echo "✅ Tailscale bağlantısı kuruldu"
           sleep 3
 
-      - name: Install and start OpenSSH
+      - name: Install prerequisites (openssh + openssl)
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server openssl
           sudo mkdir -p /var/run/sshd
           # Key-based auth tercih ediliyor, parola ile SSH login kapatılacak
           sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config || true
@@ -32,11 +32,24 @@ jobs:
           else
             sudo service ssh start
           fi
-          echo "✅ OpenSSH kuruldu ve başlatıldı"
+          echo "✅ OpenSSH ve openssl kuruldu, ssh başlatıldı"
 
-      - name: Create SSH user, set password and install authorized_keys
+      - name: Check required secrets
         run: |
-          SSH_USER=sshuser
+          # Eğer SSH_PUBLIC_KEY veya SSH_PASSWORD yoksa fail et
+          if [ -z "${{ secrets.SSH_PUBLIC_KEY }}" ]; then
+            echo "ERROR: SSH_PUBLIC_KEY secret is missing. Add it in repo Settings > Secrets."
+            exit 1
+          fi
+          if [ -z "${{ secrets.SSH_PASSWORD }}" ]; then
+            echo "ERROR: SSH_PASSWORD secret is missing. Add it in repo Settings > Secrets."
+            exit 1
+          fi
+          echo "✅ Required secrets present"
+
+      - name: Create SSH user, set password (hashed) and install authorized_keys
+        run: |
+          SSH_USER=${SSH_USER:-sshuser}
 
           # create user (if not exists) and home dir
           sudo useradd -m -s /bin/bash "$SSH_USER" || true
@@ -52,16 +65,16 @@ jobs:
           sudo chmod 700 "$HOME_DIR/.ssh"
           sudo chmod 600 "$HOME_DIR/.ssh/authorized_keys"
 
-          # set a password for sshuser using secret SSH_PASSWORD
-          # (make sure you created the SSH_PASSWORD secret in repo settings)
-          echo "$SSH_USER:${{ secrets.SSH_PASSWORD }}" | sudo chpasswd
+          # set a password for sshuser using secret SSH_PASSWORD by hashing it first
+          HASHED="$(openssl passwd -1 "${{ secrets.SSH_PASSWORD }}")"
+          sudo usermod --password "$HASHED" "$SSH_USER" || true
 
           # add to sudo group
           sudo usermod -aG sudo $SSH_USER || true
 
           # export environment variables for later steps (masked by GitHub)
           echo "SSH_USER=$SSH_USER" >> $GITHUB_ENV
-          echo "✅ SSH kullanıcısı oluşturuldu, public key eklendi ve parola ayarlandı (sudo için)."
+          echo "✅ SSH kullanıcısı oluşturuldu, public key eklendi ve parola (hashed) ayarlandı."
 
       - name: Show Tailscale IP
         run: |
