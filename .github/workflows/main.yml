@@ -1,9 +1,4 @@
-# GitHub Actions workflow: Tailscale + OpenSSH (key-based)
-# Kullanım:
-# - GitHub Secrets içine: TAILSCALE_AUTH_KEY (tailscale auth key), SSH_PUBLIC_KEY (kendi public ssh anahtarınız) ekleyin.
-# - workflow_dispatch ile elle başlatın. Loglarda TAILSCALE_IP gözükecek; local makinenizden private key ile bağlanın.
-
-name: Tailscale SSH Access (key-based)
+name: Tailscale SSH Access (key-based, with sudo password)
 
 on:
   workflow_dispatch:
@@ -29,10 +24,9 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server
           sudo mkdir -p /var/run/sshd
-          # Key-based auth tercih ediliyor, parola ile giriş kapatılacak
+          # Key-based auth tercih ediliyor, parola ile SSH login kapatılacak
           sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config || true
           sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config || true
-          # restart/start sshd (systemctl varsa kullan, yoksa service)
           if command -v systemctl >/dev/null 2>&1; then
             sudo systemctl enable --now ssh
           else
@@ -40,7 +34,7 @@ jobs:
           fi
           echo "✅ OpenSSH kuruldu ve başlatıldı"
 
-      - name: Create SSH user and install authorized_keys
+      - name: Create SSH user, set password and install authorized_keys
         run: |
           SSH_USER=sshuser
 
@@ -50,19 +44,24 @@ jobs:
           HOME_DIR="/home/$SSH_USER"
           sudo mkdir -p "$HOME_DIR/.ssh"
 
-          # write public key from secret into authorized_keys as root (tee runs as sudo)
+          # add public key (from secret) to authorized_keys
           echo "${{ secrets.SSH_PUBLIC_KEY }}" | sudo tee "$HOME_DIR/.ssh/authorized_keys" > /dev/null
 
-          # set ownership and permissions
+          # set ownership and permissions for ssh folder and file
           sudo chown -R $SSH_USER:$SSH_USER "$HOME_DIR/.ssh"
           sudo chmod 700 "$HOME_DIR/.ssh"
           sudo chmod 600 "$HOME_DIR/.ssh/authorized_keys"
 
-          # optionally give sudo privileges
+          # set a password for sshuser using secret SSH_PASSWORD
+          # (make sure you created the SSH_PASSWORD secret in repo settings)
+          echo "$SSH_USER:${{ secrets.SSH_PASSWORD }}" | sudo chpasswd
+
+          # add to sudo group
           sudo usermod -aG sudo $SSH_USER || true
 
+          # export environment variables for later steps (masked by GitHub)
           echo "SSH_USER=$SSH_USER" >> $GITHUB_ENV
-          echo "✅ SSH kullanıcısı oluşturuldu ve public key eklendi"
+          echo "✅ SSH kullanıcısı oluşturuldu, public key eklendi ve parola ayarlandı (sudo için)."
 
       - name: Show Tailscale IP
         run: |
@@ -90,6 +89,11 @@ jobs:
           echo "--- recent auth log (if available)"
           sudo tail -n 200 /var/log/auth.log || sudo journalctl -u ssh --no-pager -n 200 || true
 
+          echo "--- show authorized_keys and permissions (sanity)"
+          sudo ls -la /home/$SSH_USER/.ssh || true
+          sudo cat /home/$SSH_USER/.ssh/authorized_keys || true
+          sudo stat -c "%U %G %a %n" /home/$SSH_USER/.ssh /home/$SSH_USER/.ssh/authorized_keys || true
+
           echo "--- ping tailscale self (sanity)"
           IP=$(tailscale ip -4 | head -n1)
           if [ -n "$IP" ]; then
@@ -100,10 +104,10 @@ jobs:
       - name: Show connection instructions
         run: |
           echo "=== Bağlanma talimatı ==="
-          echo "1) Local makinenizde private key'iniz hazır olsun (ör. ~/.ssh/id_rsa)."
+          echo "1) Local makinenizde private key'iniz hazır olsun (ör. ~/.ssh/id_ed25519 veya id_rsa)."
           echo "2) Connect command örneği (local terminalinizde çalıştırın):"
           echo "   ssh -i /path/to/private_key $SSH_USER@${{ env.TAILSCALE_IP }}"
-          echo "3) Eğer ""Permission denied"" alırsanız public key'inizi (secrets) doğru koyduğunuzdan emin olun."
+          echo "3) sudo komutu parola isteyecektir. SSH password (sudo) için GitHub Secret: SSH_PASSWORD kullanıldı."
 
       - name: Keep Alive (keep job running so you can SSH)
         run: |
