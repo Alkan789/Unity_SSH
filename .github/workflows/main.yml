@@ -42,15 +42,25 @@ jobs:
 
       - name: Create SSH user and install authorized_keys
         run: |
+          SSH_USER=sshuser
+
+          # create user (if not exists) and home dir
           sudo useradd -m -s /bin/bash "$SSH_USER" || true
-          # authorized_keys'i secret'tan ekle
-          sudo mkdir -p /home/$SSH_USER/.ssh
-          sudo bash -c 'printf "%s\n" "${{ secrets.SSH_PUBLIC_KEY }}" >> /home/$SSH_USER/.ssh/authorized_keys'
-          sudo chown -R $SSH_USER:$SSH_USER /home/$SSH_USER/.ssh
-          sudo chmod 700 /home/$SSH_USER/.ssh
-          sudo chmod 600 /home/$SSH_USER/.ssh/authorized_keys
-          # sudo yetkisi ver (opsiyonel)
+
+          HOME_DIR="/home/$SSH_USER"
+          sudo mkdir -p "$HOME_DIR/.ssh"
+
+          # write public key from secret into authorized_keys as root (tee runs as sudo)
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" | sudo tee "$HOME_DIR/.ssh/authorized_keys" > /dev/null
+
+          # set ownership and permissions
+          sudo chown -R $SSH_USER:$SSH_USER "$HOME_DIR/.ssh"
+          sudo chmod 700 "$HOME_DIR/.ssh"
+          sudo chmod 600 "$HOME_DIR/.ssh/authorized_keys"
+
+          # optionally give sudo privileges
           sudo usermod -aG sudo $SSH_USER || true
+
           echo "SSH_USER=$SSH_USER" >> $GITHUB_ENV
           echo "✅ SSH kullanıcısı oluşturuldu ve public key eklendi"
 
